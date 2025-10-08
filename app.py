@@ -1,81 +1,42 @@
-# app.py
+# -*- coding: utf-8 -*-
 import streamlit as st
 import pandas as pd
+import plotly.graph_objects as go
+import json
 from agents.data_agent import DataAgent
 from agents.analyst_agent import AnalystAgent
-from utils.file_handler import unzip_and_read_file
 
-st.set_page_config(page_title="Agente EDA Cloud", layout="wide", page_icon="🧠")
+st.set_page_config(page_title="Agente EDA com Gemini 2.5 Flash", layout="wide")
 
-st.title("🧠 Multi-Agente EDA e Fraudes - Streamlit Cloud")
+st.title("🤖 Agente de Análise Exploratória (EDA) com Gemini 2.5 Flash")
+st.write("Faça upload de um arquivo CSV (ou ZIP) e pergunte ao agente o que deseja analisar.")
 
-# Inicializa histórico de chat
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
+# Inicializa agentes
+data_agent = DataAgent()
+api_key = st.secrets["gcp"]["gemini_api_key"]
+analyst_agent = AnalystAgent(api_key)
 
-# -------------------
-# Upload de arquivo
-# -------------------
-st.sidebar.header("📂 Upload de Arquivo CSV ou ZIP")
-uploaded_file = st.sidebar.file_uploader("Envie seu arquivo (.csv ou .zip)", type=["csv", "zip"])
+uploaded_file = st.file_uploader("📂 Envie um arquivo CSV ou ZIP", type=["csv", "zip"])
 
 if uploaded_file:
-    csv_path, df = unzip_and_read_file(uploaded_file)
-    if not csv_path or df is None:
-        st.error("Erro ao processar arquivo. Certifique-se de ser CSV ou ZIP válido.")
-        st.stop()
+    df, csv_path = data_agent.load_data(uploaded_file)
+    st.success(f"Arquivo carregado com {df.shape[0]} linhas e {df.shape[1]} colunas.")
+    st.dataframe(df.head())
 
-    st.success(f"✅ Arquivo carregado: {uploaded_file.name}")
-    agent = DataAgent(csv_path)
-    st.dataframe(agent.df.head())
-    st.write(agent.describe_data())
+    user_question = st.text_area("🧠 Faça sua pergunta sobre os dados:")
 
-    # -------------------
-    # Pergunta ao Agente
-    # -------------------
-    st.subheader("💬 Pergunte ao Agente")
-    question = st.text_area("Digite sua pergunta sobre os dados:")
+    if st.button("Analisar"):
+        with st.spinner("Analisando com Gemini..."):
+            response = analyst_agent.analyze(csv_path, user_question)
 
-    if st.button("🔎 Analisar"):
-        if question.strip():
-            analyst = AnalystAgent(csv_path)
-            with st.spinner("A IA está analisando..."):
-                # Reuso inteligente: cache de respostas para mesma pergunta
-                cache_key = f"qa_{hash(question)}"
-                if cache_key in st.session_state:
-                    response = st.session_state[cache_key]
-                else:
-                    response = analyst.answer_question(question)
-                    st.session_state[cache_key] = response
-
-            # Histórico de chat
-            st.session_state.chat_history.append(("user", question))
-            st.session_state.chat_history.append(("agent", response["answer"]))
-
-            # Exibe chat
-            for role, msg in st.session_state.chat_history[-10:]:
-                if role == "user":
-                    st.chat_message("user").markdown(msg)
-                else:
-                    st.chat_message("assistant").markdown(msg)
-
-            # Exibe gráfico se houver
-            if response.get("plotly_json"):
-                import plotly.io as pio
-                fig = pio.from_json(response["plotly_json"])
-                st.plotly_chart(fig, use_container_width=True)
-
-            # Relatório Markdown
-            st.markdown("### 🧾 Relatório Resumido (Markdown)")
-            markdown_report = agent.generate_markdown_report(response["answer"])
-            st.markdown(markdown_report)
-            st.download_button(
-                "⬇️ Baixar Relatório em Markdown",
-                markdown_report,
-                file_name="analise_relatorio.md",
-            )
+        # Verifica se é um gráfico JSON
+        if "<PLOTLY_JSON>" in response:
+            json_data = response.split("<PLOTLY_JSON>")[1].split("</PLOTLY_JSON>")[0]
+            fig = go.Figure(json.loads(json_data))
+            st.plotly_chart(fig, use_container_width=True)
         else:
-            st.warning("Digite uma pergunta antes de analisar.")
+            st.markdown(response)
 
-else:
-    st.info("Envie um arquivo CSV ou ZIP para começar a análise.")
+    if st.button("Gerar Relatório Automático"):
+        report = analyst_agent.generate_report(df)
+        st.markdown(report)

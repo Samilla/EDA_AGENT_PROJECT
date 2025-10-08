@@ -1,23 +1,34 @@
+# -*- coding: utf-8 -*-
+"""
+Agente de Dados
+---------------
+Responsável por carregar e validar os dados enviados pelo usuário.
+Aceita arquivos CSV normais ou ZIP contendo CSVs.
+"""
+
 import pandas as pd
-import io
+import zipfile
+import tempfile
+import os
+
 
 class DataAgent:
-    def __init__(self, csv_path):
-        self.csv_path = csv_path
-        self.df = pd.read_csv(csv_path)
+    def load_data(self, uploaded_file):
+        """
+        Lê o arquivo CSV ou ZIP e retorna o DataFrame carregado e o caminho salvo.
+        """
+        temp_dir = tempfile.mkdtemp()
+        file_path = os.path.join(temp_dir, uploaded_file.name)
+        with open(file_path, "wb") as f:
+            f.write(uploaded_file.getvalue())
 
-    def describe_data(self):
-        """Estatísticas básicas"""
-        return self.df.describe(include='all')
+        if uploaded_file.name.endswith(".zip"):
+            with zipfile.ZipFile(file_path, "r") as zip_ref:
+                zip_ref.extractall(temp_dir)
+                csv_files = [f for f in os.listdir(temp_dir) if f.endswith(".csv")]
+                if not csv_files:
+                    raise ValueError("Nenhum arquivo CSV encontrado dentro do ZIP.")
+                file_path = os.path.join(temp_dir, csv_files[0])
 
-    def generate_markdown_report(self, analysis_text: str) -> str:
-        buf = io.StringIO()
-        buf.write("# 🧾 Relatório de Análise de Dados\n\n")
-        buf.write(f"- Linhas: {self.df.shape[0]}\n")
-        buf.write(f"- Colunas: {self.df.shape[1]}\n\n")
-        buf.write("## 📊 Estatísticas Descritivas\n\n")
-        buf.write(self.df.describe(include='all').to_markdown() + "\n\n")
-        buf.write("## 💡 Conclusões da IA\n\n")
-        buf.write(analysis_text + "\n\n")
-        buf.write("_Relatório gerado automaticamente pelo Agente EDA._")
-        return buf.getvalue()
+        df = pd.read_csv(file_path, encoding="utf-8", low_memory=False)
+        return df, file_path

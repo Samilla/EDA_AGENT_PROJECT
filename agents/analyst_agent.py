@@ -1,55 +1,104 @@
-import os
+# -*- coding: utf-8 -*-
+"""
+Agente Analista de Dados (Analyst Agent)
+-----------------------------------------
+Responsável por interpretar os dados do CSV, realizar análises EDA (Exploratórias),
+gerar gráficos com Plotly e retornar conclusões em texto ou relatório Markdown.
+
+Versão otimizada:
+✔ Usa Gemini 2.5 Flash
+✔ Substitui .predict() → .invoke()
+✔ Tolerante a timeouts e falhas temporárias
+✔ Gera relatórios Markdown resumidos (sem gastar muita cota)
+"""
+
+import pandas as pd
+import plotly.express as px
 import json
 from langchain_google_genai import ChatGoogleGenerativeAI
-import streamlit as st
+from langchain.prompts import PromptTemplate
+import time
 
-MODEL_NAME = "gemini-2.5-flash"
 
 class AnalystAgent:
-    def __init__(self, csv_path):
-        self.csv_path = csv_path
-        self.api_key = self.get_api_key()
+    def __init__(self, api_key: str):
+        """Inicializa o analista com o modelo Gemini 2.5 Flash."""
         self.llm = ChatGoogleGenerativeAI(
-            model=MODEL_NAME,
-            google_api_key=self.api_key,
-            temperature=0.0,
-            timeout=120
+            model="gemini-2.5-flash",
+            temperature=0.3,
+            google_api_key=api_key,
+            max_output_tokens=2048,
         )
 
-    def get_api_key(self):
-        try:
-            return st.secrets["gemini"]["api_key"]
-        except:
-            return os.getenv("GEMINI_KEY", "")
+        self.analyst_prompt = PromptTemplate.from_template("""
+        Você é um analista de dados especialista em detecção de fraudes e EDA.
+        Use apenas o CSV {csv_path} para responder.
+        Quando precisar gerar gráficos, use a biblioteca Plotly e retorne APENAS:
+        <PLOTLY_JSON>{{fig.to_json()}}</PLOTLY_JSON>
+        Não adicione explicações dentro das tags.
 
-    def answer_question(self, question: str) -> dict:
-        prompt = f"""
-        Você é um analista de dados especializado em fraudes fiscais, outros assuntos fiscais, big data e contabilidade.
-Receberá consultas de um usuário e dados analisados de um arquivo CSV.
+        Objetivo: gerar análises úteis, estatísticas e conclusões.
+        Mostre médias, medianas, correlações, e destaque possíveis anomalias.
 
-Seu papel é:
-1️⃣ Interpretar os resultados estatísticos, gráficos e clusters que o sistema EDA gerar.  
-2️⃣ Gerar conclusões e insights automáticos, com foco em possíveis padrões, irregularidades ou anomalias.
-3️⃣ Explicar de forma clara e profissional os achados, como se fosse um relatório técnico.
-4️⃣ Manter um histórico do que já foi analisado, considerando o contexto das conversas anteriores.
+        Pergunta do usuário:
+        {user_question}
+        """)
 
-Regras importantes:
-- Use apenas o CSV {self.csv_path} para responder à seguinte pergunta:
- {question}
-- Sempre que gerar gráficos, use a bibliotecaPlotly e retorne somente:
-<PLOTLY_JSON>{{{{fig.to_json()}}}}</PLOTLY_JSON>
-- Não adicione explicações dentro das tags.
-- As análises devem ser consistentes com os dados disponíveis.
-- Se detectar inconsistências, recomende verificações, mas não faça suposições fora do contexto do CSV.
-- Sempre responda de forma estruturada, com raciocínio técnico e conclusões objetivas.
-- Se a análise envolver possíveis fraudes ou anomalias, descreva os indícios de maneira técnica e neutra, sem juízo de valor.
-"""
-        response_text = self.llm.predict(prompt)
-        result = {"answer": response_text}
+    def analyze(self, csv_path: str, user_question: str):
+        """
+        Realiza a análise principal com Gemini.
+        Retorna texto interpretado ou gráficos (Plotly JSON).
+        """
 
-        # Extrai Plotly JSON se houver
-        start_tag, end_tag = "<PLOTLY_JSON>", "</PLOTLY_JSON>"
-        if start_tag in response_text and end_tag in response_text:
-            result["plotly_json"] = response_text.split(start_tag)[1].split(end_tag)[0].strip()
+        # Monta o prompt com base no CSV e pergunta do usuário
+        prompt = self.analyst_prompt.format(csv_path=csv_path, user_question=user_question)
 
-        return result
+        # Tenta algumas vezes em caso de timeout (504)
+        for attempt in range(3):
+            try:
+                response = self.llm.invoke(prompt)
+                response_text = response.content if hasattr(response, "content") else str(response)
+                return response_text
+            except Exception as e:
+                print(f"Tentativa {attempt + 1} falhou: {e}")
+                if "DeadlineExceeded" in str(e) or "504" in str(e):
+                    time.sleep(3)
+                    continue
+                raise e
+
+        return "Ocorreu um erro ao processar a análise. Tente novamente com um arquivo menor ou uma pergunta mais específica."
+
+    def generate_report(self, df: pd.DataFrame) -> str:
+        """
+        Gera automaticamente um relatório resumido em Markdown sobre o dataset,
+        sem gastar cota da API (usa apenas pandas localmente).
+        """
+        report = []
+        report.append("# 📊 Relatório de Análise Exploratória (EDA)\n")
+
+        report.append("## 1️⃣ Estrutura dos Dados")
+        report.append(f"- Total de linhas: **{df.shape[0]}**")
+        report.append(f"- Total de colunas: **{df.shape[1]}**")
+        report.append(f"- Colunas: {', '.join(df.columns)}\n")
+
+        report.append("## 2️⃣ Tipos de Dados")
+        report.append(str(df.dtypes.to_markdown()))
+
+        report.append("\n## 3️⃣ Estatísticas Descritivas")
+        report.append(df.describe(include='all').to_markdown())
+
+        report.append("\n## 4️⃣ Dados Faltantes")
+        missing = df.isnull().sum()
+        report.append(missing.to_markdown())
+
+        report.append("\n## 5️⃣ Possíveis Conclusões")
+        if df.isnull().sum().sum() > 0:
+            report.append("- Existem valores ausentes que devem ser tratados.")
+        if any(df.nunique() == 1):
+            report.append("- Algumas colunas têm valores únicos, sem variabilidade.")
+        if df.shape[1] > 10:
+            report.append("- O dataset é amplo, recomenda-se focar nas colunas mais relevantes.")
+
+        report.append("\n_Gerado automaticamente pelo Analista EDA IA — versão otimizada._")
+
+        return "\n".join(report)
